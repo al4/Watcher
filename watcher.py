@@ -42,13 +42,15 @@ from string import Template
 import ConfigParser
 import argparse
 
+
 class Daemon:
     """
     A generic daemon class
 
     Usage: subclass the Daemon class and override the run method
     """
-    def __init__(self, pidfile, stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
+    def __init__(self, pidfile, stdin='/dev/null', stdout='/dev/null',
+                 stderr='/dev/null'):
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
@@ -56,7 +58,7 @@ class Daemon:
 
     def daemonize(self):
         """
-        do the UNIX double-fork magic, see Stevens' "Advanced Programming in the
+        do the UNIX double-fork magic, see "Advanced Programming in the
         UNIX Environment" for details (ISBN 0201563177)
         http://www.erlenstar.demon.co.uk/unix/faq_2.html#SEC16
         """
@@ -66,7 +68,8 @@ class Daemon:
                 #exit first parent
                 sys.exit(0)
         except OSError, e:
-            sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno, e.strerror))
+            sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno,
+                                                            e.strerror))
             sys.exit(1)
 
         # decouple from parent environment
@@ -81,7 +84,8 @@ class Daemon:
                 # exit from second parent
                 sys.exit(0)
         except OSError, e:
-            sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno, e.strerror))
+            sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno,
+                                                            e.strerror))
             sys.exit(1)
 
         #redirect standard file descriptors
@@ -138,7 +142,7 @@ class Daemon:
         if not pid:
             message = "pidfile %s does not exist. Daemon not running?\n"
             sys.stderr.write(message % self.pidfile)
-            return # not an error in a restart
+            return  # not an error in a restart
 
         # Try killing the daemon process
         try:
@@ -163,14 +167,16 @@ class Daemon:
 
     def run(self):
         """
-        You should override this method when you subclass Daemon. It will be called after the process has been
-        daemonized by start() or restart().
+        You should override this method when you subclass Daemon. It will be
+        called after the process has been daemonized by start() or restart().
         """
 
+
 class EventHandler(pyinotify.ProcessEvent):
-    def __init__(self, command):
+    def __init__(self, command, queue):
         pyinotify.ProcessEvent.__init__(self)
         self.command = command
+        queue = SetQueue(maxsize)
 
     # from http://stackoverflow.com/questions/35817/how-to-escape-os-system-calls-in-python
     def shellquote(self,s):
@@ -179,11 +185,12 @@ class EventHandler(pyinotify.ProcessEvent):
 
     def runCommand(self, event):
         t = Template(self.command)
-        command = t.substitute(watched=self.shellquote(event.path),
-                               filename=self.shellquote(event.pathname),
-                               tflags=self.shellquote(event.maskname),
-                               nflags=self.shellquote(event.mask),
-                               cookie=self.shellquote(event.cookie if hasattr(event, "cookie") else 0))
+        command = t.substitute(
+            watched=self.shellquote(event.path),
+            filename=self.shellquote(event.pathname),
+            tflags=self.shellquote(event.maskname),
+            nflags=self.shellquote(event.mask),
+            cookie=self.shellquote(event.cookie if hasattr(event, "cookie") else 0))
         try:
             os.system(command)
         except OSError, err:
@@ -233,43 +240,64 @@ class EventHandler(pyinotify.ProcessEvent):
         print "Opened: ", event.pathname
         self.runCommand(event)
 
+
+class SetQueue(Queue):
+    '''
+        Queue events
+    '''
+    def _init(self, maxsize):
+        self.maxsize = maxsize
+        self.queue = set()
+
+    def _put(self, item):
+        self.queue.add(item)
+
+    def _get(self):
+        return self.queue.pop()
+
+
+class ConsumerThread(Threading.Thread):
+    pass
+
+
 class WatcherDaemon(Daemon):
 
     def __init__(self, config):
-        self.stdin   = '/dev/null'
-        self.stdout  = config.get('DEFAULT','logfile')
-        self.stderr  = config.get('DEFAULT','logfile')
-        self.pidfile = config.get('DEFAULT','pidfile')
-        self.config  = config
+        self.stdin = '/dev/null'
+        self.stdout = config.get('DEFAULT', 'logfile')
+        self.stderr = config.get('DEFAULT', 'logfile')
+        self.pidfile = config.get('DEFAULT', 'pidfile')
+        self.config = config
 
     def run(self):
         log('Daemon started')
-        wdds      = []
+        wdds = []
         notifiers = []
 
         # read jobs from config file
         for section in self.config.sections():
-            log(section + ": " + self.config.get(section,'watch'))
+            log(section + ": " + self.config.get(section, 'watch'))
             # get the basic config info
-            mask      = self._parseMask(self.config.get(section,'events').split(','))
-            folder    = self.config.get(section,'watch')
-            recursive = self.config.getboolean(section,'recursive')
-            autoadd   = self.config.getboolean(section,'autoadd')
-            excluded  = self.config.get(section,'excluded').split(',')
-            command   = self.config.get(section,'command')
+            mask      = self._parseMask(self.config.get(section, 'events').split(','))
+            folder    = self.config.get(section, 'watch')
+            recursive = self.config.getboolean(section, 'recursive')
+            autoadd   = self.config.getboolean(section, 'autoadd')
+            excluded  = self.config.get(section, 'excluded').split(',')
+            command   = self.config.get(section, 'command')
 
             wm = pyinotify.WatchManager()
             handler = EventHandler(command)
 
-            wdds.append(wm.add_watch(folder, mask, rec=recursive,auto_add=autoadd))
-            # Remove watch about excluded dir. Not the perfect solution as they would
-            # just have to not be added in first place...
+            wdds.append(wm.add_watch(folder, mask, rec=recursive,
+                                     auto_add=autoadd))
+            ''' Remove watch about excluded dir. Not the perfect solution as
+            they would just have to not be added in first place...'''
             if excluded[-1]:
-                for excluded_dir in excluded :
-                    for (k,v) in wdds[-1].iteritems():
+                for excluded_dir in excluded:
+                    for (k, v) in wdds[-1].iteritems():
                         if k.startswith(excluded_dir):
-                            wm.rm_watch(v) 
-                    wdds[-1] = dict((k,v) for (k,v) in wdds[-1].iteritems() if not k.startswith(excluded_dir))
+                            wm.rm_watch(v)
+                    wdds[-1] = dict((k, v) for (k, v) in wdds[-1].iteritems() if not k.startswith(excluded_dir))
                     log("Excluded dirs : " + excluded_dir)
             # BUT we need a new ThreadNotifier so I can specify a different
             # EventHandler instance for each job
@@ -280,7 +308,6 @@ class WatcherDaemon(Daemon):
         # TODO: load test this ... is having a thread for each a problem?
         for notifier in notifiers:
             notifier.start()
-
 
     def _parseMask(self, masks):
         ret = False;
@@ -332,22 +359,20 @@ class WatcherDaemon(Daemon):
             return current_options | new_option
 
 
-
 def log(msg):
-    sys.stdout.write("%s %s\n" % ( str(datetime.datetime.now()), msg ))
+    sys.stdout.write("%s %s\n" % (str(datetime.datetime.now()), msg))
 
 
 if __name__ == "__main__":
     # Parse commandline arguments
     parser = argparse.ArgumentParser(
-                description='A daemon to monitor changes within specified directories and run commands on these changes.',
-             )
-    parser.add_argument('-c','--config',
+        description='A daemon to monitor changes within specified directories and run commands on these changes.',)
+    parser.add_argument('-c', '--config',
                         action='store',
                         help='Path to the config file (default: %(default)s)')
     parser.add_argument('command',
                         action='store',
-                        choices=['start','stop','restart','debug'],
+                        choices=['start', 'stop', 'restart', 'debug'],
                         help='What to do. Use debug to start in the foreground')
     args = parser.parse_args()
 
@@ -356,11 +381,12 @@ if __name__ == "__main__":
     if(args.config):
         confok = config.read(args.config)
     else:
-        confok = config.read(['/etc/watcher.ini', os.path.expanduser('~/.watcher.ini')]);
+        confok = config.read(
+            ['/etc/watcher.ini', os.path.expanduser('~/.watcher.ini')])
 
     if(not confok):
         sys.stderr.write("Failed to read config file. Try -c parameter\n")
-        sys.exit(4);
+        sys.exit(4)
 
     # Initialize the daemon
     daemon = WatcherDaemon(config)
