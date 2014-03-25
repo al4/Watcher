@@ -41,6 +41,8 @@ from types import *
 from string import Template
 import ConfigParser
 import argparse
+import threading
+from Queue import Queue
 
 
 class Daemon:
@@ -176,12 +178,95 @@ class EventHandler(pyinotify.ProcessEvent):
     def __init__(self, command, queue):
         pyinotify.ProcessEvent.__init__(self)
         self.command = command
-        queue = SetQueue(maxsize)
+        self.queue = queue  # Set queue is a queue that uses a set
 
-    # from http://stackoverflow.com/questions/35817/how-to-escape-os-system-calls-in-python
-    def shellquote(self,s):
+    def addToQueue(self, event):
+        self.queue.put(event)
+
+    def process_IN_ACCESS(self, event):
+        print "Access: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_ATTRIB(self, event):
+        print "Attrib: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_CLOSE_WRITE(self, event):
+        print "Close write: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_CLOSE_NOWRITE(self, event):
+        print "Close nowrite: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_CREATE(self, event):
+        print "Creating: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_DELETE(self, event):
+        print "Deleteing: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_MODIFY(self, event):
+        print "Modify: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_MOVE_SELF(self, event):
+        print "Move self: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_MOVED_FROM(self, event):
+        print "Moved from: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_MOVED_TO(self, event):
+        print "Moved to: ", event.pathname
+        self.addToQueue(event)
+
+    def process_IN_OPEN(self, event):
+        print "Opened: ", event.pathname
+        self.addToQueue(event)
+
+
+class SetQueue(Queue):
+    '''
+        Extend Queue class to use set() for unique entries. Taken from:
+        http://stackoverflow.com/questions/1581895/
+    '''
+    def _init(self, maxsize):
+        self.maxsize = maxsize
+        self.queue = set()
+
+    def _put(self, item):
+        self.queue.add(item)
+
+    def _get(self):
+        return self.queue.pop()
+
+
+class Worker(threading.Thread):
+    '''
+        Thread to run an event
+    '''
+
+    def __init__(self, name, queue, command):
+        super(Worker, self).__init__()
+        self.queue = queue
+        self.command = command
+
+    # from http://stackoverflow.com/questions/35817/
+    def shellquote(self, s):
         s = str(s)
         return "'" + s.replace("'", "'\\''") + "'"
+
+    def run(self):
+        while True:
+            if self.queue.empty():
+                log('Queue empty')
+                time.sleep(1)
+            event = self.queue.get()
+            #log(str(event))
+            self.runCommand(event)
 
     def runCommand(self, event):
         t = Template(self.command)
@@ -196,69 +281,6 @@ class EventHandler(pyinotify.ProcessEvent):
         except OSError, err:
             print "Failed to run command '%s' %s" % (command, str(err))
 
-    def process_IN_ACCESS(self, event):
-        print "Access: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_ATTRIB(self, event):
-        print "Attrib: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_CLOSE_WRITE(self, event):
-        print "Close write: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_CLOSE_NOWRITE(self, event):
-        print "Close nowrite: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_CREATE(self, event):
-        print "Creating: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_DELETE(self, event):
-        print "Deleteing: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_MODIFY(self, event):
-        print "Modify: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_MOVE_SELF(self, event):
-        print "Move self: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_MOVED_FROM(self, event):
-        print "Moved from: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_MOVED_TO(self, event):
-        print "Moved to: ", event.pathname
-        self.runCommand(event)
-
-    def process_IN_OPEN(self, event):
-        print "Opened: ", event.pathname
-        self.runCommand(event)
-
-
-class SetQueue(Queue):
-    '''
-        Queue events
-    '''
-    def _init(self, maxsize):
-        self.maxsize = maxsize
-        self.queue = set()
-
-    def _put(self, item):
-        self.queue.add(item)
-
-    def _get(self):
-        return self.queue.pop()
-
-
-class ConsumerThread(Threading.Thread):
-    pass
-
 
 class WatcherDaemon(Daemon):
 
@@ -270,9 +292,13 @@ class WatcherDaemon(Daemon):
         self.config = config
 
     def run(self):
-        log('Daemon started')
+        log('WatcherDaemon started')
         wdds = []
         notifiers = []
+
+        # Create queue
+        maxsize = 65535  # arbitrary max queue size
+        queue = SetQueue(maxsize)
 
         # read jobs from config file
         for section in self.config.sections():
@@ -286,7 +312,7 @@ class WatcherDaemon(Daemon):
             command   = self.config.get(section, 'command')
 
             wm = pyinotify.WatchManager()
-            handler = EventHandler(command)
+            handler = EventHandler(command, queue)
 
             wdds.append(wm.add_watch(folder, mask, rec=recursive,
                                      auto_add=autoadd))
@@ -304,13 +330,24 @@ class WatcherDaemon(Daemon):
             # this means that each job has its own thread as well (I think)
             notifiers.append(pyinotify.ThreadedNotifier(wm, handler))
 
+        # Spawn consumer threads
+        n_workers = 4  # number of workers
+        x = 0
+        log('Spawning workers')
+        while x <= n_workers:
+            x = x + 1
+            worker = Worker(name="Worker%s" % x, queue=queue, command=command)
+            log(str("Start worker %s" % x))
+            worker.start()
+
         # now we need to start ALL the notifiers.
         # TODO: load test this ... is having a thread for each a problem?
         for notifier in notifiers:
             notifier.start()
+        worker.join()
 
     def _parseMask(self, masks):
-        ret = False;
+        ret = False
 
         for mask in masks:
             mask = mask.strip()
