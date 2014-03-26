@@ -1,3 +1,14 @@
+# About this fork
+
+I forked Watcher to do operations in parallel, essentially bolting on a
+de-duplicating queue and threads to the existing classes. The rationale
+for this was pushing graphite whisper files to a new host via rsync whenever
+they were updated. Thus metrics still being sent to the old graphite host
+would be updated on the new. Doing this sequentially without deduplicating
+and without a queue wasn't really practical.
+
+It worked for me, YMMV.
+
 # About Watcher
 
 Watcher is a daemon that watches specified files/folders for changes and
